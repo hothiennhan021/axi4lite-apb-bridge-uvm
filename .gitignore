@@ -1,0 +1,21 @@
+# Vivado / XSim
+xsim.dir/
+*.wdb
+*.jou
+*.log
+*.pb
+*.str
+*.vcd
+webtalk*
+.Xil/
+
+# Sim outputs
+work/
+sim_build/
+results/*.ucdb
+results/logs/
+
+# Editor
+.vscode/
+*.swp
+Thumbs.db

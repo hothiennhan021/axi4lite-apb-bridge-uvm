@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **DUT** | `axi2apb_bridge` |
-| **Version** | 0.1 (draft) |
+| **Version** | 0.2 |
 | **Author** | Ho Thien Nhan |
 | **Methodology** | UVM 1.2 (SystemVerilog) |
 | **Simulator** | Xilinx XSim (Vivado ML Standard) |
-| **Status** | In progress |
+| **Status** | Phases 1-8 complete (RTL, environment, all 10 tests, SVA, regression automation); 50-seed closure regression per §2.4 not yet run — see README.md Results |
 
 ---
 
@@ -285,20 +285,20 @@ unreachable RTL, and the finding recorded.
 
 | Feature | Tests | Coverage items | Assertions | Status |
 |---|---|---|---|---|
-| FEAT-001 | `test_smoke`, `test_random_rw` | `cp_direction`, `cp_addr_range` | ASRT-B03 | Not started |
-| FEAT-002 | `test_smoke`, `test_random_rw` | `cp_direction`, `cp_addr_range` | ASRT-B03 | Not started |
-| FEAT-003 | `test_random_rw` | `cp_pwrite` | ASRT-P01, P02 | Not started |
-| FEAT-004 | `test_wait_state` | `cp_wait_states`, `cx_pwrite_x_wait` | ASRT-P03, P04 | Not started |
-| FEAT-005 | `test_error_resp` | `cp_pslverr`, `cx_dir_x_resp` | ASRT-A06, A07, P05 | Not started |
-| FEAT-006 | `test_wstrb` | `cp_wstrb`, `cx_dir_x_wstrb` | ASRT-A04 | Not started |
-| FEAT-007 | `test_random_rw` | — | ASRT-A01, A03 | Not started |
-| FEAT-008 | `test_back2back` | `cp_gap` | ASRT-B01 | Not started |
-| FEAT-009 | `test_back2back` | `cp_direction` | ASRT-B01 | Not started |
-| FEAT-010 | `test_reset_mid_txn` | — | ASRT-A08 | Not started |
-| FEAT-011 | all | — | ASRT-A01–A05 | Not started |
-| FEAT-012 | `test_idle` | `cp_gap` | ASRT-P06 | Not started |
-| FEAT-013 | `test_backpressure` | `cp_delay` | ASRT-A09, A10 | Not started |
-| FEAT-014 | `test_reset_mid_txn` | — | ASRT-B02 | Not started |
+| FEAT-001 | `test_smoke`, `test_random_rw` | `cp_direction`, `cp_addr_range` | ASRT-B03 | Verified |
+| FEAT-002 | `test_smoke`, `test_random_rw` | `cp_direction`, `cp_addr_range` | ASRT-B03 | Verified (BUG-003 found + fixed) |
+| FEAT-003 | `test_random_rw` | `cp_pwrite` | ASRT-P01, P02 | Verified |
+| FEAT-004 | `test_wait_state` | `cp_wait_states`, `cx_pwrite_x_wait` | ASRT-P03, P04 | Verified |
+| FEAT-005 | `test_error_resp` | `cp_pslverr`, `cx_dir_x_resp` | ASRT-A06, A07, P05 | Verified (BUG-002 found + fixed) |
+| FEAT-006 | `test_wstrb` | `cp_wstrb`, `cx_dir_x_wstrb` | ASRT-A04 | Verified |
+| FEAT-007 | `test_random_rw` | — | ASRT-A01, A03 | Verified (BUG-001 found + fixed) |
+| FEAT-008 | `test_back2back` | `cp_gap` | ASRT-B01 | Verified (BUG-001 found + fixed) |
+| FEAT-009 | `test_back2back` | `cp_direction` | ASRT-B01 | Verified — partial; see design_decisions.md §7 for the simultaneous-AWVALID/ARVALID coverage gap |
+| FEAT-010 | `test_reset_mid_txn` | — | ASRT-A08 | Verified |
+| FEAT-011 | all | — | ASRT-A01–A05 | Verified |
+| FEAT-012 | `test_idle` | `cp_gap` | ASRT-P06 | Verified |
+| FEAT-013 | `test_backpressure` | `cp_delay` | ASRT-A09, A10 | Verified |
+| FEAT-014 | `test_reset_mid_txn` | — | ASRT-B02 | Verified |
 
 ---
 
@@ -310,7 +310,9 @@ seed and test, waveform screenshot, root-cause analysis, fix and re-verification
 
 | ID | Summary | Feature | Severity | Status |
 |---|---|---|---|---|
-| *(to be filled during execution)* | | | | |
+| [BUG-001](bug_reports/BUG-001_aw_w_done_not_cleared.md) | `aw_done_q`/`w_done_q` never clear, hanging every transaction after the first | FEAT-007/008/009 | Critical | Fixed, re-verified |
+| [BUG-002](bug_reports/BUG-002_pslverr_not_mapped_on_read.md) | `PSLVERR` dropped on the read path — `RRESP` always `OKAY` | FEAT-005 | High | Fixed, re-verified |
+| [BUG-003](bug_reports/BUG-003_addr_q_not_latched_on_read.md) | `addr_q`/`PADDR` never latched for reads | FEAT-002 | Critical | Fixed, re-verified |
 
 ---
 
@@ -334,3 +336,4 @@ seed and test, waveform screenshot, root-cause analysis, fix and re-verification
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-09-07 | Initial draft — feature list, test plan, coverage and assertion plans |
+| 0.2 | 2026-09-16 | RTL, UVM environment, all 10 tests, SVA and regression automation implemented; traceability matrix and bug tracking updated with results (see README.md and docs/design_decisions.md) |

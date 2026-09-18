@@ -1,5 +1,6 @@
 # Vivado / XSim
 xsim.dir/
+xsim.covdb/
 *.wdb
 *.jou
 *.log
@@ -12,8 +13,14 @@ webtalk*
 # Sim outputs
 work/
 sim_build/
+sim/.run_*.args
+sim/.cc_run.args
 results/*.ucdb
 results/logs/
+results/cov/
+results/cov_report/
+results/codecov/
+results/codecov_report/
 
 # Editor
 .vscode/

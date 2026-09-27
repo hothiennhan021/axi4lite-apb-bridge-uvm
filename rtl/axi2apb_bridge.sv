@@ -10,9 +10,14 @@
 //   ASM-04 : AWPROT / ARPROT are ignored
 //   ASM-05 : Reset is active-low, asynchronous assert
 //
-// WSTRB decision: option (c) - any write with wstrb != 4'b1111 returns SLVERR
-//   on BRESP and the APB write is still issued (full word, wstrb not
-//   forwarded). Rationale is recorded in docs/design_decisions.md.
+// WSTRB decision: option (d) - a write with wstrb != 4'b1111 is answered with
+//   SLVERR on BRESP and NO APB transfer is issued, so the slave is left
+//   untouched (APB3 has no byte enables). Rationale and history (option (c)
+//   used to write the full word anyway) are in docs/design_decisions.md.
+//
+// Bug injection for re-verifying the environment (docs/bug_reports/):
+//   +define+INJECT_BUG_001 / _002 / _003 re-introduces BUG-001/002/003.
+//   Never define these for synthesis.
 //==============================================================================
 
 module axi2apb_bridge (
@@ -119,6 +124,15 @@ module axi2apb_bridge (
   logic        write_pending;
   assign write_pending = aw_done_q | w_done_q | awvalid | wvalid;
 
+  // A complete write is ready to leave IDLE this cycle, and the strobe it
+  // carries (taken from the bus if W handshakes this cycle, else latched).
+  logic        write_ready;
+  logic [3:0]  wstrb_eff;
+  logic        wstrb_full;
+  assign write_ready = aw_complete & w_complete;
+  assign wstrb_eff   = (wvalid & wready) ? wstrb : wstrb_q;
+  assign wstrb_full  = (wstrb_eff == 4'b1111);
+
   //==========================================================================
   // Sequential: state register
   //==========================================================================
@@ -133,9 +147,8 @@ module axi2apb_bridge (
   //==========================================================================
   // Sequential: transaction registers
   //
-  // WSTRB decision (option c): a write with wstrb_q != 4'b1111 folds into
-  // err_q as an SLVERR on BRESP; the full 32-bit word is still written to
-  // APB (wstrb is not forwarded - APB3 has no byte-enable signal of its own).
+  // WSTRB decision (option d): a write whose strobe is not 4'b1111 goes
+  // straight from IDLE to RESP with err_q=1 (SLVERR) and never touches APB.
   //==========================================================================
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -154,19 +167,30 @@ module axi2apb_bridge (
         // when no write activity (pending or starting) is present, so
         // awready/wready and arready never fire in the same cycle.
         if (awvalid && awready) addr_q  <= awaddr;
+`ifndef INJECT_BUG_003
         else if (arvalid && arready) addr_q <= araddr;
+`endif
 
         if (wvalid && wready) begin
           wdata_q <= wdata;
           wstrb_q <= wstrb;
         end
 
-        if (state_d == SETUP) begin
-          is_write_q <= aw_complete && w_complete;
+        if (state_d != IDLE) begin
+          is_write_q <= write_ready;
+        end
+
+        // Partial-strobe write: answered directly from IDLE with SLVERR.
+        if (state_d == RESP) begin
+          err_q <= 1'b1;
         end
 
         // Clear the flags the cycle we leave IDLE so the next transaction
         // starts clean; otherwise latch whether each channel has completed.
+`ifdef INJECT_BUG_001
+        aw_done_q <= aw_complete;
+        w_done_q  <= w_complete;
+`else
         if (state_d == IDLE) begin
           aw_done_q <= aw_complete;
           w_done_q  <= w_complete;
@@ -174,11 +198,16 @@ module axi2apb_bridge (
           aw_done_q <= 1'b0;
           w_done_q  <= 1'b0;
         end
+`endif
       end
 
       if (state_q == ACCESS && pready) begin
         rdata_q <= prdata;
-        err_q   <= pslverr | (is_write_q && (wstrb_q != 4'b1111));
+`ifdef INJECT_BUG_002
+        err_q   <= is_write_q ? pslverr : 1'b0;
+`else
+        err_q   <= pslverr;
+`endif
       end
     end
   end
@@ -195,13 +224,17 @@ module axi2apb_bridge (
     state_d = state_q;   // default: hold
 
     case (state_q)
+      // if/else rather than `?:` on the enum: some tools (Icarus, strict
+      // lint) reject assigning a conditional expression to an enum.
       IDLE: begin
-        if (aw_complete && w_complete)
-          state_d = SETUP;                    // full write assembled
-        else if (arvalid && arready)
+        if (write_ready) begin
+          if (wstrb_full) state_d = SETUP;    // full write assembled
+          else            state_d = RESP;     // partial strobe: SLVERR, no APB
+        end else if (arvalid && arready) begin
           state_d = SETUP;                    // read accepted (write_pending was low)
-        else
+        end else begin
           state_d = IDLE;
+        end
       end
 
       SETUP: begin
@@ -209,11 +242,13 @@ module axi2apb_bridge (
       end
 
       ACCESS: begin
-        state_d = pready ? RESP : ACCESS;     // extend on wait states
+        if (pready) state_d = RESP;           // extend on wait states
+        else        state_d = ACCESS;
       end
 
       RESP: begin
-        state_d = (is_write_q ? bready : rready) ? IDLE : RESP;
+        if (is_write_q ? bready : rready) state_d = IDLE;
+        else                              state_d = RESP;
       end
 
       default: state_d = IDLE;

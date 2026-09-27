@@ -17,10 +17,17 @@ first write completes.
 
 ## Reproduction
 
+The bug is kept in the RTL behind a macro, so it can be re-introduced
+without editing any file:
+
 ```
 cd sim
-make TEST=test_smoke SEED=1 run
+make TEST=test_smoke SEED=1 DEFINES=INJECT_BUG_001 run   # UVM on XSim
+make icarus DEFINES=INJECT_BUG_001                          # directed bench on Icarus
 ```
+
+`make icarus_bugs` (run in CI) checks that the directed bench still
+catches it.
 
 Any seed reproduces it — the bug does not depend on randomisation, only on
 issuing a second transaction. Confirmed on seeds 1-3 of `test_smoke`,

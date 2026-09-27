@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **DUT** | `axi2apb_bridge` |
-| **Version** | 0.2 |
+| **Version** | 0.3 |
 | **Author** | Ho Thien Nhan |
 | **Methodology** | UVM 1.2 (SystemVerilog) |
 | **Simulator** | Xilinx XSim (Vivado ML Standard) |
-| **Status** | Phases 1-8 complete (RTL, environment, all 10 tests, SVA, regression automation); 50-seed closure regression per §2.4 not yet run — see README.md Results |
+| **Status** | Phases 1-8 complete (RTL, environment, all 10 tests, SVA, regression automation). v0.3 (2026-09-27) fixes the coverage collection and stimulus gaps listed in §11 — XSim regression and coverage must be re-run; 50-seed closure regression per §2.4 not yet run |
 
 ---
 
@@ -112,6 +112,8 @@ slip through one weak checker:
 | `coverage_collector` | Analysis | Samples functional coverage from both monitors |
 | `axi_lite_protocol_sva` | Bind module | Cycle-accurate AXI4-Lite protocol checks |
 | `apb_protocol_sva` | Bind module | Cycle-accurate APB3 protocol checks |
+| `bridge_protocol_sva` | Bind module | Single-outstanding, deadlock, address forwarding, partial-strobe checks |
+| `tb_bridge_directed` | Directed bench (Icarus) | Open-source, CI-run self-checking bench; `INJECT_BUG_00x` mutation checks |
 
 ### 2.4 Completion Criteria
 
@@ -137,10 +139,10 @@ bridge's own design intent.
 | FEAT-003 | APB setup/access phase | `PSEL` asserts for one cycle with `PENABLE` low (setup), then `PENABLE` asserts (access) | High |
 | FEAT-004 | Wait state insertion | Access phase extends while `PREADY` is low; bridge holds `PADDR`/`PWDATA`/`PWRITE` stable | High |
 | FEAT-005 | Error response mapping | `PSLVERR` high maps to `BRESP`/`RRESP` = `SLVERR`; otherwise `OKAY` | High |
-| FEAT-006 | Write strobe handling | `WSTRB` is honoured — either forwarded to the APB slave model or handled per design decision | High |
+| FEAT-006 | Write strobe handling | `WSTRB = 4'b1111` writes the word; any other strobe is answered `SLVERR` with **no** APB transfer (design_decisions.md §3, option d) | High |
 | FEAT-007 | Address/data channel ordering | Write proceeds regardless of whether `AWVALID` or `WVALID` arrives first | High |
 | FEAT-008 | Back-to-back transactions | Consecutive transactions with no idle cycles are handled without data corruption | Medium |
-| FEAT-009 | Read/write arbitration | Simultaneous read and write requests are serviced fairly, no starvation, no interleaving of APB phases | Medium |
+| FEAT-009 | Read/write arbitration | Simultaneous read and write requests: fixed priority write > read, no interleaving of APB phases. A continuous write stream can starve reads — accepted trade-off for a single-master bridge (design_decisions.md §2) | Medium |
 | FEAT-010 | Reset behaviour | On reset assert, all outputs return to their defined idle values; bridge recovers cleanly afterwards | High |
 | FEAT-011 | AXI handshake compliance | `VALID` never deasserts before `READY`; payload stays stable during the handshake | High |
 | FEAT-012 | Idle behaviour | With no transaction pending, `PSEL` and `PENABLE` remain low | Low |
@@ -154,10 +156,10 @@ bridge's own design intent.
 | Test name | Features covered | Type | Description |
 |---|---|---|---|
 | `test_smoke` | FEAT-001, 002 | Directed | Single write followed by single read to the same address; earliest bring-up check |
-| `test_random_rw` | FEAT-001, 002, 003, 006, 007 | Random | Randomised sequence of reads and writes across the full address range |
+| `test_random_rw` | FEAT-001, 002, 003, 006, 007 | Random | Randomised sequence of reads and writes (AW/W skew 0–3 cycles each, 10 % of addresses outside the 4 KB window), then corner data patterns written and read back |
 | `test_wait_state` | FEAT-004 | Random | APB slave inserts a randomised number of wait states (0–8) per transfer |
 | `test_error_resp` | FEAT-005 | Random | APB slave asserts `PSLVERR` with configurable probability; response mapping checked |
-| `test_back2back` | FEAT-008, 009 | Random | Zero-delay transaction stream, read and write requests issued concurrently |
+| `test_back2back` | FEAT-008, 009 | Random | Zero-delay transaction stream. The single AXI driver never raises AR and AW in the same cycle; that case is covered by the directed Icarus bench (test 10) |
 | `test_wstrb` | FEAT-006 | Random | All 16 `WSTRB` patterns exercised, including `4'b0000` |
 | `test_backpressure` | FEAT-013 | Random | Master delays `BREADY`/`RREADY` by a randomised number of cycles |
 | `test_reset_mid_txn` | FEAT-010, 014 | Directed | Reset asserted at randomised points during an active transfer |
@@ -179,6 +181,7 @@ the closure report is generated.
 | `axi_back2back_seq` | Transaction stream with delay constrained to zero |
 | `axi_same_addr_seq` | Write then read to the identical address — verifies data integrity end to end |
 | `axi_wstrb_sweep_seq` | Directed sweep of all `WSTRB` patterns |
+| `axi_data_pattern_seq` | All-zero, all-one and 32 walking-one words, written and read back (`cp_data` corner bins) |
 
 ---
 
@@ -191,16 +194,21 @@ the closure report is generated.
 | Coverpoint | Bins | Rationale |
 |---|---|---|
 | `cp_direction` | `READ`, `WRITE` | Both directions must be exercised |
-| `cp_addr_range` | `LOW` (0x000–0x3FF), `MID` (0x400–0xBFF), `HIGH` (0xC00–0xFFF) | Ensures the whole decoded space is touched |
+| `cp_addr_range` | `LOW` (0x000–0x3FF), `MID` (0x400–0xBFF), `HIGH` (0xC00–0xFFF), `ABOVE_4K` | Whole decoded space, plus the upper address bits |
 | `cp_addr_align` | `ALIGNED`, `UNALIGNED` | Alignment affects `WSTRB` interpretation |
-| `cp_wstrb` | 16 bins, one per pattern; `4'b0000` in a separate bin | Byte-enable handling is a classic bug source |
+| `cp_wstrb` | 16 bins, one per pattern; `4'b0000` in a separate bin — **writes only** (`iff`) | Byte-enable handling is a classic bug source |
 | `cp_resp` | `OKAY`, `SLVERR` | Both response paths must be seen |
-| `cp_data` | `ALL_ZERO`, `ALL_ONE`, `WALKING_ONE`, `RANDOM` | Corner data patterns catch stuck-bit issues |
-| `cp_delay` | `ZERO`, `SHORT` (1–3), `LONG` (4–15) | Inter-transaction spacing affects the FSM |
+| `cp_data` | `ALL_ZERO`, `ALL_ONE`, `WALKING_ONE`, `RANDOM` (default, not counted) | Corner data patterns catch stuck-bit issues |
+| `cp_delay` | `ZERO` (0–1), `SHORT` (2–4), `LONG` (≥5) — idle cycles *observed* by the monitor before the first VALID | Inter-transaction spacing affects the FSM. The driver needs one cycle between transactions, so the tightest observed spacing is 1 |
+| `cp_aw_w_order` | `SAME_CYCLE`, `AW_FIRST`, `W_FIRST` — writes only | FEAT-007: both arrival orders exercise the `aw_done_q`/`w_done_q` flags |
+| `cp_resp_wait` | `NONE`, `FEW` (1–3), `MANY` (≥4) cycles BVALID/RVALID waited for READY | FEAT-013 backpressure |
 
 **Cross `cx_dir_x_resp`** — `cp_direction` × `cp_resp`
 Both read and write error paths must be exercised, not just one of them. A bridge can
 easily map `PSLVERR` correctly on writes and drop it on reads.
+
+**Cross `cx_dir_x_resp_wait`** — `cp_direction` × `cp_resp_wait`
+Backpressure on both response channels.
 
 **Cross `cx_dir_x_wstrb`** — `cp_direction` × `cp_wstrb`
 `WSTRB` is only meaningful for writes; the read side of this cross is an illegal
@@ -215,7 +223,7 @@ combination and is excluded via `ignore_bins`.
 | `cp_pwrite` | `READ`, `WRITE` | Direction on the APB side must match the AXI side |
 | `cp_wait_states` | `ZERO`, `ONE`, `FEW` (2–4), `MANY` (5–8) | Wait-state handling is the main timing risk |
 | `cp_pslverr` | `NO_ERROR`, `ERROR` | Error injection must actually happen |
-| `cp_gap` | `BACK2BACK` (0), `SHORT` (1–3), `IDLE` (≥4) | Back-to-back transfers stress the FSM return path |
+| `cp_gap` | `SHORT` (1–3), `IDLE` (≥4); `BACK2BACK` (0) excluded, see §6.3 | Back-to-back transfers stress the FSM return path |
 
 **Cross `cx_pwrite_x_wait`** — `cp_pwrite` × `cp_wait_states`
 Read and write paths can hold different signals during wait states; both need coverage
@@ -233,6 +241,8 @@ justification is not acceptable.
 | Excluded bin | Reason |
 |---|---|
 | `cx_dir_x_wstrb[READ, *]` | `WSTRB` has no meaning on read transactions per the AXI4-Lite specification |
+| `cp_gap.BACK2BACK` | Unreachable by design: between two APB transfers the bridge always passes through `RESP` and `IDLE`, so `PSEL` is low for at least 2 cycles. Declared `ignore_bins` |
+| Toggle: `awprot`, `arprot` | Ignored by design (ASM-04); the driver always drives 0. Exclude from toggle coverage |
 | *(to be completed during closure)* | |
 
 ### 6.4 Code Coverage
@@ -266,18 +276,21 @@ unreachable RTL, and the finding recorded.
 |---|---|---|
 | ASRT-P01 | `penable_after_psel` | `PENABLE` asserts exactly one cycle after `PSEL`, never simultaneously |
 | ASRT-P02 | `psel_during_penable` | `PSEL` stays high for as long as `PENABLE` is high |
-| ASRT-P03 | `addr_stable_in_access` | `PADDR`, `PWRITE` and `PWDATA` are stable throughout the access phase |
+| ASRT-P03 | `addr_stable_in_access`, `addr_stable_setup_to_access` | `PADDR`, `PWRITE` and `PWDATA` are stable from SETUP through the end of the access phase |
 | ASRT-P04 | `penable_deassert` | `PENABLE` deasserts in the cycle after `PREADY` is sampled high |
 | ASRT-P05 | `no_pslverr_without_pready` | `PSLVERR` is only meaningful when `PREADY` is high |
 | ASRT-P06 | `idle_state` | When no transfer is active, both `PSEL` and `PENABLE` are low |
+| ASRT-P07 | `hold_until_ready` | An access phase waiting for `PREADY` keeps `PSEL` and `PENABLE` high |
+| ASRT-P08 | `ctrl_known`, `addr_known` | No X/Z on `PSEL`/`PENABLE`, nor on `PADDR`/`PWRITE`/`PWDATA` while selected |
 
 ### 7.3 Bridge-Level Assertions
 
 | ID | Assertion | Description |
 |---|---|---|
-| ASRT-B01 | `single_outstanding` | No new APB transfer starts before the previous one completes |
+| ASRT-B01 | `single_outstanding_write`, `single_outstanding_read` | Black-box, from AXI handshakes only: while a write (or read) is open, no other request is accepted |
 | ASRT-B02 | `no_deadlock` | Every accepted AXI request produces a response within N cycles |
-| ASRT-B03 | `addr_forwarding` | `PADDR` matches the `AWADDR`/`ARADDR` of the request being serviced |
+| ASRT-B03 | `addr_forwarding` | `PADDR` equals the `AWADDR`/`ARADDR` captured at the AXI handshake (not the DUT's own `addr_q`) |
+| ASRT-B04 | `no_partial_strobe_write` | No APB write is issued for a partial-strobe AXI write (FEAT-006) |
 
 ---
 
@@ -290,14 +303,14 @@ unreachable RTL, and the finding recorded.
 | FEAT-003 | `test_random_rw` | `cp_pwrite` | ASRT-P01, P02 | Verified |
 | FEAT-004 | `test_wait_state` | `cp_wait_states`, `cx_pwrite_x_wait` | ASRT-P03, P04 | Verified |
 | FEAT-005 | `test_error_resp` | `cp_pslverr`, `cx_dir_x_resp` | ASRT-A06, A07, P05 | Verified (BUG-002 found + fixed) |
-| FEAT-006 | `test_wstrb` | `cp_wstrb`, `cx_dir_x_wstrb` | ASRT-A04 | Verified |
-| FEAT-007 | `test_random_rw` | — | ASRT-A01, A03 | Verified (BUG-001 found + fixed) |
+| FEAT-006 | `test_wstrb` | `cp_wstrb`, `cx_dir_x_wstrb` | ASRT-A04, B04 | To re-verify (behaviour changed to option d in v0.3) |
+| FEAT-007 | `test_random_rw` | `cp_aw_w_order` | ASRT-A01, A03 | To re-verify — before v0.3 the driver never separated AW and W, so this was not exercised by the UVM stimulus (BUG-001 found + fixed) |
 | FEAT-008 | `test_back2back` | `cp_gap` | ASRT-B01 | Verified (BUG-001 found + fixed) |
-| FEAT-009 | `test_back2back` | `cp_direction` | ASRT-B01 | Verified — partial; see design_decisions.md §7 for the simultaneous-AWVALID/ARVALID coverage gap |
+| FEAT-009 | `test_back2back`, directed test 10 | `cp_direction` | ASRT-B01 | Verified — simultaneous AW/AR only in the directed Icarus bench; see design_decisions.md §7 |
 | FEAT-010 | `test_reset_mid_txn` | — | ASRT-A08 | Verified |
 | FEAT-011 | all | — | ASRT-A01–A05 | Verified |
 | FEAT-012 | `test_idle` | `cp_gap` | ASRT-P06 | Verified |
-| FEAT-013 | `test_backpressure` | `cp_delay` | ASRT-A09, A10 | Verified |
+| FEAT-013 | `test_backpressure` | `cp_resp_wait`, `cx_dir_x_resp_wait` | ASRT-A09, A10 | Verified (coverage item was `cp_delay`, which measures something else, until v0.3) |
 | FEAT-014 | `test_reset_mid_txn` | — | ASRT-B02 | Verified |
 
 ---
@@ -337,3 +350,4 @@ seed and test, waveform screenshot, root-cause analysis, fix and re-verification
 |---|---|---|
 | 0.1 | 2026-09-07 | Initial draft — feature list, test plan, coverage and assertion plans |
 | 0.2 | 2026-09-16 | RTL, UVM environment, all 10 tests, SVA and regression automation implemented; traceability matrix and bug tracking updated with results (see README.md and docs/design_decisions.md) |
+| 0.3 | 2026-09-27 | WSTRB option (d); driver separates AW/W timing; monitor measures idle gap, AW/W order, response wait; `cp_delay` actually sampled; new `cp_aw_w_order`, `cp_resp_wait`, `ABOVE_4K`; `cp_gap.BACK2BACK` excluded; data-pattern sequence; scoreboard `check_phase`; SVA P03 setup side, P07, P08, black-box B01/B03, B04; directed Icarus bench + `INJECT_BUG_00x` |

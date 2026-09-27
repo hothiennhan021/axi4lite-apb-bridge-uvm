@@ -9,6 +9,7 @@ Usage:
     python run_regression.py
     python run_regression.py --tests test_smoke,test_wstrb --seeds 10
     python run_regression.py --seeds 50 --seed-start 1000
+    python run_regression.py --tests test_smoke --define INJECT_BUG_001   # must FAIL
 
 A run is a FAIL if: xsim exits non-zero, UVM_FATAL/UVM_ERROR count is
 nonzero, or an SVA assertion fired (SVA uses $error, not `uvm_error, so it
@@ -63,9 +64,12 @@ def run(cmd, **kwargs):
     return subprocess.run(cmd, cwd=SIM_DIR, **kwargs)
 
 
-def compile_and_elaborate():
+def compile_and_elaborate(defines=()):
     print("=== compiling ===")
-    r = run([XVLOG, "-sv", "-L", "uvm", "-f", FILELIST.as_posix()])
+    define_args = []
+    for d in defines:
+        define_args += ["-d", d]
+    r = run([XVLOG, "-sv", "-L", "uvm", *define_args, "-f", FILELIST.as_posix()])
     if r.returncode != 0:
         sys.exit("compile failed")
 
@@ -207,6 +211,9 @@ def main():
     ap.add_argument("--skip-compile", action="store_true",
                      help="reuse an already-elaborated snapshot")
     ap.add_argument("--no-coverage-merge", action="store_true")
+    ap.add_argument("--define", action="append", default=[], metavar="MACRO",
+                     help="Verilog macro for xvlog, repeatable (e.g. INJECT_BUG_001 "
+                          "to re-introduce a documented bug)")
     args = ap.parse_args()
 
     tests = [t.strip() for t in args.tests.split(",") if t.strip()]
@@ -215,7 +222,7 @@ def main():
         sys.exit(f"unknown test(s): {', '.join(sorted(unknown))}")
 
     if not args.skip_compile:
-        compile_and_elaborate()
+        compile_and_elaborate(args.define)
 
     results = []
     run_ids = []

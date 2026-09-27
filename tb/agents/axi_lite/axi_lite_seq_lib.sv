@@ -175,3 +175,45 @@ class axi_wstrb_sweep_seq extends uvm_sequence #(axi_lite_txn);
     end
   endtask
 endclass : axi_wstrb_sweep_seq
+
+
+// Corner data patterns (cp_data ALL_ZERO / ALL_ONE / WALKING_ONE): write each
+// pattern and read it back. Pure random 32-bit data practically never hits
+// these bins. Fields are assigned after randomize() rather than through
+// inline equality constraints (see the XSim solver note in
+// axi_wstrb_sweep_seq above).
+class axi_data_pattern_seq extends uvm_sequence #(axi_lite_txn);
+  `uvm_object_utils(axi_data_pattern_seq)
+
+  function new(string name = "axi_data_pattern_seq");
+    super.new(name);
+  endfunction
+
+  task body();
+    bit [31:0] patterns[$];
+    bit [31:0] a;
+    patterns.push_back(32'h0000_0000);
+    patterns.push_back(32'hFFFF_FFFF);
+    for (int i = 0; i < 32; i++) patterns.push_back(32'h1 << i);
+
+    foreach (patterns[i]) begin
+      a = 32'h0000_0800 + 4 * i;
+
+      req = axi_lite_txn::type_id::create("req");
+      start_item(req);
+      if (!req.randomize() with { dir == AXI_WRITE; })
+        `uvm_error(get_type_name(), "randomize failed")
+      req.addr  = a;
+      req.data  = patterns[i];
+      req.wstrb = 4'b1111;
+      finish_item(req);
+
+      req = axi_lite_txn::type_id::create("req");
+      start_item(req);
+      if (!req.randomize() with { dir == AXI_READ; })
+        `uvm_error(get_type_name(), "randomize failed")
+      req.addr = a;
+      finish_item(req);
+    end
+  endtask
+endclass : axi_data_pattern_seq

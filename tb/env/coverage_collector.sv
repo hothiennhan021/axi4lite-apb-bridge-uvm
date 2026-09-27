@@ -21,9 +21,10 @@ class coverage_collector extends uvm_subscriber #(axi_lite_txn);
     }
 
     cp_addr_range: coverpoint tr.addr {
-      bins LOW  = {[32'h000:32'h3FF]};
-      bins MID  = {[32'h400:32'hBFF]};
-      bins HIGH = {[32'hC00:32'hFFF]};
+      bins LOW      = {[32'h000:32'h3FF]};
+      bins MID      = {[32'h400:32'hBFF]};
+      bins HIGH     = {[32'hC00:32'hFFF]};
+      bins ABOVE_4K = {[32'h0000_1000:32'hFFFF_FFFF]}; // upper address bits
     }
 
     cp_addr_align: coverpoint tr.addr[1:0] {
@@ -31,7 +32,9 @@ class coverage_collector extends uvm_subscriber #(axi_lite_txn);
       bins UNALIGNED = {[2'b01:2'b11]};
     }
 
-    cp_wstrb: coverpoint tr.wstrb {
+    // writes only: the monitor fills wstrb with 0 for reads, which would
+    // otherwise hit ZERO/PATTERN[0] without any write ever using them
+    cp_wstrb: coverpoint tr.wstrb iff (tr.dir == AXI_WRITE) {
       bins ZERO = {4'b0000};
       bins PATTERN[16] = {[4'b0000:4'b1111]};
     }
@@ -55,13 +58,32 @@ class coverage_collector extends uvm_subscriber #(axi_lite_txn);
       bins RANDOM      = default;
     }
 
+    // Observed idle cycles before the transaction (axi_lite_monitor.sv).
+    // The driver always needs one cycle to drop BREADY/RREADY and fetch the
+    // next item, so the tightest spacing it can produce reads as 1.
     cp_delay: coverpoint tr.delay {
-      bins ZERO  = {0};
-      bins SHORT = {[1:3]};
-      bins LONG  = {[4:15]};
+      bins ZERO  = {[0:1]};
+      bins SHORT = {[2:4]};
+      bins LONG  = {[5:$]};
+    }
+
+    // FEAT-007: order in which AW and W handshake
+    cp_aw_w_order: coverpoint tr.aw_w_skew iff (tr.dir == AXI_WRITE) {
+      bins SAME_CYCLE = {0};
+      bins AW_FIRST   = {[1:$]};
+      bins W_FIRST    = {[$:-1]};
+    }
+
+    // FEAT-013: cycles BVALID/RVALID was held waiting for BREADY/RREADY
+    cp_resp_wait: coverpoint tr.resp_wait {
+      bins NONE = {0};
+      bins FEW  = {[1:3]};
+      bins MANY = {[4:$]};
     }
 
     cx_dir_x_resp: cross cp_direction, cp_resp;
+
+    cx_dir_x_resp_wait: cross cp_direction, cp_resp_wait;
 
     cx_dir_x_wstrb: cross cp_direction, cp_wstrb {
       ignore_bins read_wstrb = binsof(cp_direction) intersect {AXI_READ};
@@ -88,10 +110,13 @@ class coverage_collector extends uvm_subscriber #(axi_lite_txn);
       bins ERROR    = {1'b1};
     }
 
+    // BACK2BACK (0) is unreachable by design: the bridge always passes
+    // through RESP and IDLE (PSEL low) between two transfers, so the gap is
+    // at least 2 cycles. Excluded per verification_plan.md section 6.3.
     cp_gap: coverpoint tr.gap_cycles {
-      bins BACK2BACK = {0};
+      ignore_bins BACK2BACK = {0};
       bins SHORT     = {[1:3]};
-      bins IDLE      = {[4:1023]};
+      bins IDLE      = {[4:$]};
     }
 
     cx_pwrite_x_wait: cross cp_pwrite, cp_wait_states;

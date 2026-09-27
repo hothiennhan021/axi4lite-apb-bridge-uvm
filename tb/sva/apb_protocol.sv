@@ -48,6 +48,31 @@ module apb_protocol_sva (
     psel && penable && !pready |=> $stable(paddr) && $stable(pwrite) && $stable(pwdata)
   ) else $error("ASRT-P03: PADDR/PWRITE/PWDATA changed mid-access");
 
+  // ASRT-P03 (setup side): the same signals may not change between SETUP
+  // and the first ACCESS cycle either
+  a_addr_stable_setup_to_access: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    psel && !penable |=> $stable(paddr) && $stable(pwrite) && $stable(pwdata)
+  ) else $error("ASRT-P03: PADDR/PWRITE/PWDATA changed between SETUP and ACCESS");
+
+  // ASRT-P07: an access phase waiting for PREADY keeps PSEL and PENABLE high
+  a_hold_until_ready: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    psel && penable && !pready |=> psel && penable
+  ) else $error("ASRT-P07: PSEL/PENABLE dropped before PREADY");
+
+  // ASRT-P08: no X/Z on the control signals, nor on the address phase
+  // while selected
+  a_ctrl_known: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    !$isunknown({psel, penable})
+  ) else $error("ASRT-P08: PSEL/PENABLE is X/Z");
+
+  a_addr_known: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    psel |-> !$isunknown({paddr, pwrite}) && (!pwrite || !$isunknown(pwdata))
+  ) else $error("ASRT-P08: PADDR/PWRITE/PWDATA is X/Z while PSEL is high");
+
   // ASRT-P04: PENABLE deasserts in the cycle after PREADY is sampled high
   a_penable_deassert: assert property (
     @(posedge clk) disable iff (!rst_n)

@@ -1,0 +1,32 @@
+name: icarus
+
+# The UVM environment needs Vivado XSim, which CI runners do not have. CI
+# runs the self-checking directed testbench on Icarus Verilog instead, and
+# checks that each documented bug (INJECT_BUG_00x) is still caught.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  directed:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Icarus Verilog
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Directed testbench
+        run: make -C sim icarus
+
+      - name: Injected bugs must be detected
+        run: make -C sim icarus_bugs
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icarus-logs
+          path: results/icarus/*.log
+          if-no-files-found: ignore

@@ -57,28 +57,48 @@ the arbitration decision itself (see the testbench-architecture section
 below). If this bridge is ever used behind an arbiter/interconnect with
 multiple masters, this trade-off should be revisited.
 
-### 3. WSTRB: partial strobe maps to SLVERR (option c)
+### 3. WSTRB: partial strobe is rejected with SLVERR, no APB transfer (option d)
 
-**Decision:** A write with `WSTRB != 4'b1111` still writes the full 32-bit
-word to the APB slave (WSTRB is not forwarded — APB3 has no byte-enable of
-its own) but the AXI response is downgraded to `SLVERR`.
+**Decision:** A write with `WSTRB != 4'b1111` is answered with `SLVERR` on
+`BRESP` straight from `IDLE` (IDLE → RESP), and **no APB transfer is
+issued** — the APB slave is left untouched.
+
+**History:** until 2026-09-27 the bridge used option (c) below: it still
+issued the full-word APB write and only downgraded the response to
+`SLVERR`. That told the master something went wrong, but by then the bytes
+it had asked to leave alone were already overwritten (reproduced by
+`tb/directed/tb_bridge_directed.sv`: `WSTRB=0001` wrote the whole
+`0xFFFFFFFF` word). "I couldn't honour that request exactly" was true, but
+"and I damaged the neighbouring bytes anyway" was also true.
 
 **Alternatives considered:**
 - (a) Silently ignore WSTRB, always write the full word, always report
   `OKAY`.
-- (b) Forward WSTRB on a non-standard APB sideband signal, requiring a
-  non-standard APB slave that understands it.
+- (b) Upgrade the APB side to APB4 and forward WSTRB on `PSTRB`. `PSTRB` is
+  a *standard* APB4 signal (AMBA APB, IHI0024C and later), not a private
+  sideband — the real cost is that every slave behind the bridge must then
+  be an APB4 slave that honours `PSTRB`. This is the right choice if byte
+  writes are needed; it also gives `AWPROT`/`ARPROT` somewhere to go
+  (`PPROT`).
+- (c) Write the full word anyway and report `SLVERR` (the old behaviour).
+- (d) Reject the write: `SLVERR`, no APB transfer.
+- (e) Read-modify-write: an APB read, merge, APB write. Not atomic, two
+  transfers per write, a larger FSM.
 
-**Why option (c) won:** (a) silently corrupts bytes the master asked to
-leave untouched, with no way for the master to ever find out — a correctness
-bug dressed up as a simplification. (b) makes the bridge non-compliant with
-plain APB3 and pushes the byte-enable problem onto every slave behind it.
-Option (c) keeps the APB side a stock, unmodified APB3 slave and gives the
-master an honest signal ("I couldn't honor that request exactly") instead of
-a wrong one. The cost is that partial-strobe writes are unusable through
-this bridge for any master that actually needs byte-level writes — a real
-limitation, not just a testbench inconvenience, and worth flagging if this
-bridge is reused somewhere that needs true byte-enable support.
+**Why option (d) won:** (a) corrupts silently. (c) corrupts and reports it,
+which is not much better for the slave's state. (d) is exactly what the
+AMBA AXI specification lists for an AXI4-Lite slave that does not support a
+strobe combination — detect it and give an error response — and it keeps
+the APB side a stock APB3 port with no side effect. The cost is the same as
+before: partial-strobe writes are unusable through this bridge; if they are
+needed, (b) is the upgrade path.
+
+**How it is checked:** the UVM scoreboard does not pair a partial-strobe
+write with any APB transfer and requires `SLVERR` (an unexpected APB write
+shifts every later pairing or is left over at `check_phase`); SVA
+`ASRT-B04` fires if an APB write is ever issued while the latched strobe is
+partial; the directed Icarus bench checks `SLVERR`, zero APB transfers and
+unchanged slave memory for six strobe patterns.
 
 ### 4. Address/data registered before forwarding to APB
 
@@ -139,7 +159,14 @@ would catch a bug specific to the combination.
 
 **Decision:** `axi_lite_driver` pulls one sequence item, fully drives it
 (through its response), then pulls the next — it does not run independent
-concurrent processes for the write and read channels.
+concurrent processes for the write and read channels. *Within* a write,
+the AW and W channels are two independent processes: `AWVALID` is raised
+after `aw_delay` cycles and `WVALID` after `w_delay` cycles (0–3 each), so
+AW-first, W-first and same-cycle arrival are all generated and measured
+(`cp_aw_w_order`). Before 2026-09-27 both VALIDs were raised together, and
+since the bridge accepts both in the same cycle in `IDLE`, the
+`aw_done_q`/`w_done_q` flags of decision 1 were never set by the UVM
+stimulus at all — FEAT-007 was marked "Verified" without being exercised.
 
 **Why:** this matches `ASM-02` (one outstanding transaction) at the
 *environment* level, not just the DUT's — the master this testbench models
@@ -157,7 +184,10 @@ environment. A dual-sequencer AXI agent (independent write and read
 sequencers, each with its own driver) would close this gap properly; it was
 judged disproportionate scope for what a single-master bridge testbench of
 this size needs, but is the natural next step if this environment is ever
-extended to a multi-master front-end.
+extended to a multi-master front-end. In the meantime the simultaneous
+`AWVALID`/`WVALID`/`ARVALID` case is checked by test 10 of the directed
+Icarus bench (`tb/directed/tb_bridge_directed.sv`): write accepted, read
+held off, read then returns the new data.
 
 ### 8. Scoreboard flushes both FIFOs across a reset event
 
@@ -198,6 +228,20 @@ against any module that happens to instantiate `axi4lite_if`. Given this
 project has exactly one top module, that portability was not worth losing
 the `bind` mechanism (and its "zero RTL/interface changes" property)
 entirely.
+
+### 10. A second, open-source testbench next to the UVM one
+
+**Decision:** `tb/directed/tb_bridge_directed.sv` is a small self-checking
+directed bench that runs on Icarus Verilog; the three bugs in
+`docs/bug_reports/` stay in the RTL behind `INJECT_BUG_001..003` macros.
+
+**Why:** the UVM environment needs Vivado XSim, so nothing could check the
+repository automatically, and the bug reports could not be reproduced from
+the git history (the environment was committed in one batch). The directed
+bench runs in CI on every push, and `make icarus_bugs` re-injects each bug
+and requires the bench to fail — a cheap mutation test that keeps the
+"bugs found" claims honest. It is a complement, not a replacement: it has
+no constrained-random stimulus and no functional coverage.
 
 ---
 

@@ -26,3 +26,4 @@ results/codecov_report/
 .vscode/
 *.swp
 Thumbs.db
+results/icarus/

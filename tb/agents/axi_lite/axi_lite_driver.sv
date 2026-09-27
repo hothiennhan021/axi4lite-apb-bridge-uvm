@@ -3,9 +3,11 @@
 //
 // Fixed priority write>read is a DUT decision, not a driver one: the driver
 // simply issues each transaction's channel handshakes independently and lets
-// the AWVALID/WVALID/ARVALID arbitration happen on the bus. AWADDR and WDATA
-// are asserted together but each channel's VALID is deasserted the cycle its
-// own READY is seen, so the two channels can complete on different cycles.
+// the AWVALID/WVALID/ARVALID arbitration happen on the bus. The AW and W
+// channels run as two independent processes: AWVALID is raised after
+// tr.aw_delay cycles and WVALID after tr.w_delay cycles, and each VALID drops
+// the cycle its own READY is seen, so AW-first, W-first and same-cycle
+// arrival are all generated (FEAT-007).
 //==============================================================================
 
 class axi_lite_driver extends uvm_driver #(axi_lite_txn);
@@ -68,27 +70,24 @@ class axi_lite_driver extends uvm_driver #(axi_lite_txn);
   endtask
 
   task drive_write(axi_lite_txn tr);
-    bit aw_done = 1'b0;
-    bit w_done  = 1'b0;
-
-    vif.driver_cb.awaddr  <= tr.addr;
-    vif.driver_cb.awprot  <= 3'b000;
-    vif.driver_cb.awvalid <= 1'b1;
-    vif.driver_cb.wdata   <= tr.data;
-    vif.driver_cb.wstrb   <= tr.wstrb;
-    vif.driver_cb.wvalid  <= 1'b1;
-
-    do begin
-      @(vif.driver_cb);
-      if (!aw_done && vif.driver_cb.awready) begin
+    fork
+      begin : aw_channel
+        repeat (tr.aw_delay) @(vif.driver_cb);
+        vif.driver_cb.awaddr  <= tr.addr;
+        vif.driver_cb.awprot  <= 3'b000;
+        vif.driver_cb.awvalid <= 1'b1;
+        do @(vif.driver_cb); while (!vif.driver_cb.awready);
         vif.driver_cb.awvalid <= 1'b0;
-        aw_done = 1'b1;
       end
-      if (!w_done && vif.driver_cb.wready) begin
+      begin : w_channel
+        repeat (tr.w_delay) @(vif.driver_cb);
+        vif.driver_cb.wdata  <= tr.data;
+        vif.driver_cb.wstrb  <= tr.wstrb;
+        vif.driver_cb.wvalid <= 1'b1;
+        do @(vif.driver_cb); while (!vif.driver_cb.wready);
         vif.driver_cb.wvalid <= 1'b0;
-        w_done = 1'b1;
       end
-    end while (!aw_done || !w_done);
+    join
 
     // FEAT-013: BREADY can be held low for resp_ready_delay cycles after the
     // address/data handshake - the DUT must keep BVALID asserted until then.

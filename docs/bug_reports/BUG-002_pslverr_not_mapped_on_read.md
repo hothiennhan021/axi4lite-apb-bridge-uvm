@@ -24,10 +24,17 @@ injection at the same 30% rate was completely clean.
 
 ## Reproduction
 
+The bug is kept in the RTL behind a macro, so it can be re-introduced
+without editing any file:
+
 ```
 cd sim
-make TEST=test_error_resp SEED=1 run
+make TEST=test_error_resp SEED=1 DEFINES=INJECT_BUG_002 run   # UVM on XSim
+make icarus DEFINES=INJECT_BUG_002                          # directed bench on Icarus
 ```
+
+`make icarus_bugs` (run in CI) checks that the directed bench still
+catches it.
 
 ## Root Cause
 
@@ -51,6 +58,11 @@ always reports `OKAY`, silently swallowing every read-side `PSLVERR`.
 ```systemverilog
 err_q <= pslverr | (is_write_q && (wstrb_q != 4'b1111));
 ```
+
+(Since the WSTRB handling moved to option (d) on 2026-09-27 — a
+partial-strobe write never reaches APB and is answered SLVERR straight
+from `IDLE` — the strobe term is no longer part of `err_q`; the ACCESS
+latch is now simply `err_q <= pslverr;`. See `docs/design_decisions.md` §3.)
 
 ## Re-verification
 

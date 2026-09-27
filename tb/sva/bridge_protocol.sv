@@ -13,17 +13,24 @@ module bridge_protocol_sva (
   input logic        rst_n,
 
   input logic [2:0]  state_q,   // must match axi2apb_bridge's state_t encoding
-  input logic [31:0] addr_q,
+  input logic [3:0]  wstrb_q,
 
   input logic [31:0] awaddr,
   input logic        awvalid,
   input logic        awready,
+  input logic        wvalid,
+  input logic        wready,
+  input logic        bvalid,
+  input logic        bready,
 
   input logic [31:0] araddr,
   input logic        arvalid,
   input logic        arready,
+  input logic        rvalid,
+  input logic        rready,
 
   input logic [31:0] paddr,
+  input logic        pwrite,
   input logic        psel,
   input logic        penable,
   input logic        pready
@@ -43,13 +50,51 @@ module bridge_protocol_sva (
     state_q == IDLE |-> !psel && !penable
   ) else $error("ASRT-P06: PSEL/PENABLE asserted while FSM is IDLE");
 
-  // ASRT-B01: no new APB transfer starts before the previous one completes -
-  // SETUP is only ever entered directly from IDLE, never re-entered while a
-  // transfer is already in flight.
-  a_single_outstanding: assert property (
+  //--------------------------------------------------------------------------
+  // Black-box tracking of the request being serviced, from AXI handshakes
+  // only (no DUT internals): which channels of the current write / read have
+  // been accepted, and the address that request carried.
+  //--------------------------------------------------------------------------
+  logic        aw_seen_q, w_seen_q, ar_seen_q;
+  logic [31:0] req_addr_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      aw_seen_q  <= 1'b0;
+      w_seen_q   <= 1'b0;
+      ar_seen_q  <= 1'b0;
+      req_addr_q <= '0;
+    end else begin
+      if (bvalid && bready) begin
+        aw_seen_q <= 1'b0;
+        w_seen_q  <= 1'b0;
+      end else begin
+        if (awvalid && awready) aw_seen_q <= 1'b1;
+        if (wvalid && wready)   w_seen_q  <= 1'b1;
+      end
+      if (rvalid && rready)        ar_seen_q <= 1'b0;
+      else if (arvalid && arready) ar_seen_q <= 1'b1;
+
+      if (awvalid && awready)      req_addr_q <= awaddr;
+      else if (arvalid && arready) req_addr_q <= araddr;
+    end
+  end
+
+  // ASRT-B01: one outstanding transaction (ASM-02). While a write is open
+  // (AW and/or W accepted, B not yet handshaken) no read is accepted and
+  // neither of its own channels is accepted twice; while a read is open
+  // nothing else is accepted.
+  a_single_outstanding_write: assert property (
     @(posedge clk) disable iff (!rst_n)
-    state_q == SETUP |-> $past(state_q) == IDLE
-  ) else $error("ASRT-B01: SETUP entered without returning to IDLE first");
+    (aw_seen_q || w_seen_q) |-> !(arvalid && arready) &&
+                                !(aw_seen_q && awvalid && awready) &&
+                                !(w_seen_q && wvalid && wready)
+  ) else $error("ASRT-B01: new request accepted while a write is outstanding");
+
+  a_single_outstanding_read: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    ar_seen_q |-> !(arvalid && arready) && !(awvalid && awready) && !(wvalid && wready)
+  ) else $error("ASRT-B01: new request accepted while a read is outstanding");
 
   // ASRT-B02: every accepted request reaches a response within a bounded
   // number of cycles. The bound (64) comfortably covers this project's
@@ -60,12 +105,19 @@ module bridge_protocol_sva (
     state_q == SETUP |-> ##[1:64] state_q == RESP
   ) else $error("ASRT-B02: no response within 64 cycles of SETUP");
 
-  // ASRT-B03: PADDR matches the latched address of the request being
-  // serviced - guards the paddr/addr_q wiring against a future refactor.
+  // ASRT-B03: PADDR equals the AWADDR/ARADDR of the request being serviced,
+  // as captured from the AXI handshake above (not from the DUT's own addr_q,
+  // which would only re-check a wire).
   a_addr_forwarding: assert property (
     @(posedge clk) disable iff (!rst_n)
-    psel |-> paddr == addr_q
-  ) else $error("ASRT-B03: PADDR does not match the latched request address");
+    psel |-> paddr == req_addr_q
+  ) else $error("ASRT-B03: PADDR does not match the AXI request address");
+
+  // ASRT-B04: WSTRB option (d) - a partial-strobe write never reaches APB
+  a_no_partial_strobe_write: assert property (
+    @(posedge clk) disable iff (!rst_n)
+    psel && pwrite |-> wstrb_q == 4'b1111
+  ) else $error("ASRT-B04: APB write issued for a partial-strobe AXI write");
 
 endmodule : bridge_protocol_sva
 
@@ -74,14 +126,21 @@ bind axi2apb_bridge bridge_protocol_sva u_bridge_protocol_sva (
   .clk     (clk),
   .rst_n   (rst_n),
   .state_q (state_q),
-  .addr_q  (addr_q),
+  .wstrb_q (wstrb_q),
   .awaddr  (awaddr),
   .awvalid (awvalid),
   .awready (awready),
+  .wvalid  (wvalid),
+  .wready  (wready),
+  .bvalid  (bvalid),
+  .bready  (bready),
   .araddr  (araddr),
   .arvalid (arvalid),
   .arready (arready),
+  .rvalid  (rvalid),
+  .rready  (rready),
   .paddr   (paddr),
+  .pwrite  (pwrite),
   .psel    (psel),
   .penable (penable),
   .pready  (pready)
